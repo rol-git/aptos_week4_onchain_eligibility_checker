@@ -1,3 +1,5 @@
+from aptos_sdk.account_address import AccountAddress
+
 GALXE_API_URL = "https://graphigo.prd.galaxy.eco/query"
 
 
@@ -308,4 +310,20 @@ CAMPAIGNS = {
             }
         }
     }
+}
+
+OATS = {
+    "fourth quest v1": {
+        "creator": AccountAddress.from_str("0x092d2f7ad00630e4dfffcca01bee12c84edf004720347fb1fd57016d2cc8d3f8"),
+        "collection_name": "Galxe OAT",
+        "token_name": "Quest Four - Aptos Ecosystem Fundamentals",
+        "property_version": 0
+    },
+
+    "fourth quest v2": {
+            "creator": AccountAddress.from_str("0x092d2f7ad00630e4dfffcca01bee12c84edf004720347fb1fd57016d2cc8d3f8"),
+            "collection_name": "Galxe OAT",
+            "token_name": "[CLAIM ONLY] Quest Four - Aptos Ecosystem Fundamentals",
+            "property_version": 0
+        }
 }

@@ -1,9 +1,11 @@
-from aptos_sdk.async_client import RestClient
+from aptos_sdk.async_client import RestClient, ApiError
 from fake_useragent import UserAgent
 from ecdsa.curves import Ed25519
+from typing import Optional, Any
 from core.constants import *
 from utils.log import log
 import json as js
+import asyncio
 import hashlib
 import struct
 import hmac
@@ -31,40 +33,64 @@ class AptosClient(RestClient):
         self.APTOS_DERIVATION_PATH = "m/44'/637'/0'/0'/0'"
         self.ua = UserAgent()
 
-    async def check_eligibility(self, session, wallet, credential, retry=1):
+    async def check_account(self, session, wallet, retry=1):
         try:
-            session.headers.update({"User-Agent": self.ua.random})
-            json = {
-                "operationName": QUERIES["Cred"]["name"],
-                "variables": {
-                    "id": credential["id"],
-                    "eligibleAddress": str(wallet.address())
-                },
-                "query": QUERIES["Cred"]["query"]
-            }
-            response = await session.post(url=GALXE_API_URL, json=json)
+            eligible = await self.check_galxe_eligibility(session, wallet,
+                                                          CAMPAIGNS["Quest Four - Aptos Ecosystem Fundamentals"]
+                                                          ["credentials"]["On-Chain Task Verification"])
+            check_oats_tasks = [asyncio.create_task(self.get_token_balance(wallet.address(), *OATS[oat].values(),
+                                                                           session)) for oat in OATS.keys()]
+            oat_claimed = any(await asyncio.gather(*check_oats_tasks))
 
-            if js.loads(response.text)["data"]["credential"]["eligible"] == 1:
-                log.success(f'{wallet.address()} | {credential["name"]} | Check eligibility | Attempt {retry}/3 | '
-                            f'Wallet is eligible')
-                return True
+            if eligible:
+
+                if not oat_claimed:
+                    log.success(f'{wallet.address()} | Quest Four - Aptos Ecosystem Fundamentals | '
+                                f'On-Chain Task Verification | Check eligibility | Attempt {retry}/3 | '
+                                f'Wallet is eligible')
+                    return "eligible"
+
+                else:
+                    log.info(f'{wallet.address()} | Quest Four - Aptos Ecosystem Fundamentals | '
+                             f'On-Chain Task Verification | Check eligibility | Attempt {retry}/3 | '
+                             f'OAT has already been claimed')
+                    return "oat claimed"
 
             else:
-                log.warning(f'{wallet.address()} | {credential["name"]} | Check eligibility | Attempt {retry}/3 | '
+                log.warning(f'{wallet.address()} | Quest Four - Aptos Ecosystem Fundamentals | '
+                            f'On-Chain Task Verification | Check eligibility | Attempt {retry}/3 | '
                             f'Wallet is not eligible')
-                return False
+                return "not eligible"
 
         except Exception as error:
-            log.error(f'{wallet} | {credential["name"]} | Check eligibility | Attempt {retry}/3 | '
+            log.error(f'{wallet} | Check eligibility | Attempt {retry}/3 | '
                       f'Error: {error}')
             retry += 1
 
             if retry > 3:
-                log.critical(f'{wallet.address()} | {credential["name"]} | Check eligibility | '
+                log.critical(f'{wallet.address()} | Check eligibility | '
                              f'Wallet failed after 3 retries')
-                return False
+                return "failed"
 
-            return await self.check_eligibility(session, wallet, credential, retry)
+            return await self.check_account(session, wallet, retry)
+
+    async def check_galxe_eligibility(self, session, wallet, credential):
+        session.headers.update({"User-Agent": self.ua.random})
+        json = {
+            "operationName": QUERIES["Cred"]["name"],
+            "variables": {
+                "id": credential["id"],
+                "eligibleAddress": str(wallet.address())
+            },
+            "query": QUERIES["Cred"]["query"]
+        }
+        response = await session.post(url=GALXE_API_URL, json=json)
+
+        if js.loads(response.text)["data"]["credential"]["eligible"] == 1:
+            return True
+
+        else:
+            return False
 
     def mnemonic_to_bip39seed(self, mnemonic, passphrase):
         mnemonic = bytes(mnemonic, 'utf8')
@@ -124,3 +150,111 @@ class AptosClient(RestClient):
                 path.append(int(i))
 
         return path
+
+    async def get_token_balance(
+            self,
+            owner: AccountAddress,
+            creator: AccountAddress,
+            collection_name: str,
+            token_name: str,
+            property_version: int,
+            session
+    ) -> int:
+        info = await self.get_token(
+            owner, creator, collection_name, token_name, property_version, session
+        )
+        if info == 0:
+            return info
+        return int(info["amount"])
+
+    async def get_token(
+            self,
+            owner: AccountAddress,
+            creator: AccountAddress,
+            collection_name: str,
+            token_name: str,
+            property_version: int,
+            session
+    ) -> Any:
+        resource = await self.account_resource(owner, "0x3::token::TokenStore", session)
+        if resource == 0:
+            return resource
+        token_store_handle = resource["data"]["tokens"]["handle"]
+
+        token_id = {
+            "token_data_id": {
+                "creator": str(creator),
+                "collection": collection_name,
+                "name": token_name,
+            },
+            "property_version": str(property_version),
+        }
+
+        try:
+            return await self.get_table_item(
+                token_store_handle,
+                "0x3::token::TokenId",
+                "0x3::token::Token",
+                token_id,
+                session
+            )
+        except ApiError as e:
+            if e.status_code == 404:
+                return {
+                    "id": token_id,
+                    "amount": "0",
+                }
+            raise
+
+    async def account_resource(
+            self,
+            account_address: AccountAddress,
+            resource_type: str,
+            session,
+            ledger_version: Optional[int] = None
+    ) -> Any:
+        session.headers.update({"User-Agent": self.ua.random})
+
+        if not ledger_version:
+            request = (
+                f"{self.base_url}/accounts/{account_address}/resource/{resource_type}"
+            )
+        else:
+            request = f"{self.base_url}/accounts/{account_address}/resource/{resource_type}?ledger_version=" \
+                      f"{ledger_version}"
+
+        response = await session.get(request)
+        if response.status_code == 404:
+            return 0
+        if response.status_code >= 400:
+            raise ApiError(f"{response.text} - {account_address} - {response.status_code}", response.status_code)
+        return response.json()
+
+    async def get_table_item(
+            self,
+            handle: str,
+            key_type: str,
+            value_type: str,
+            key: Any,
+            session,
+            ledger_version: Optional[int] = None
+    ) -> Any:
+        session.headers.update({"User-Agent": self.ua.random})
+
+        if not ledger_version:
+            request = f"{self.base_url}/tables/{handle}/item"
+        else:
+            request = (
+                f"{self.base_url}/tables/{handle}/item?ledger_version={ledger_version}"
+            )
+        response = await session.post(
+            request,
+            json={
+                "key_type": key_type,
+                "value_type": value_type,
+                "key": key,
+            },
+        )
+        if response.status_code >= 400:
+            raise ApiError(response.text, response.status_code)
+        return response.json()

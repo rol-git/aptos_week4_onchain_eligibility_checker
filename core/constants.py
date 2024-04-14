@@ -306,7 +306,7 @@ CAMPAIGNS = {
         "credentials": {
             "On-Chain Task Verification": {
                 "name": "On-Chain Task Verification",
-                "id": "397897604815392768",
+                "id": "397897604815392768"
             }
         }
     }
